@@ -11,6 +11,11 @@ func Logf(level string, format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "%5.5s %s\n", level, line)
 }
 
+//Tracef ...
+func Tracef(format string, args ...interface{}) {
+	Logf("trace", format, args...)
+}
+
 //Debugf ...
 func Debugf(format string, args ...interface{}) {
 	Logf("debug", format, args...)
