@@ -14,14 +14,12 @@ import (
 //ForThisPackage returns a logger for your package
 func ForThisPackage() ILogger {
 	c := GetCaller(3)
-	fmt.Fprintf(os.Stderr, "ForThisPackage(%s)\n", c.Package)
 	return Logger(c.Package)
 }
 
 //Top returns the top logger
 //set level/writer on this to change all loggers
 func Top() ILogger {
-	fmt.Fprintf(os.Stderr, "Top()\n")
 	return top
 }
 
@@ -31,7 +29,6 @@ func Top() ILogger {
 //e.g. "github.com/go-msvc/logger" which you can get by
 //calling logger.ForThisPackage()
 func Logger(name string) ILogger {
-	fmt.Fprintf(os.Stderr, "Logger(%s)\n", name)
 	//if name has paths, create parents first
 	names := strings.SplitN(name, "/", -1)
 	log := top
@@ -125,7 +122,6 @@ type logger struct {
 }
 
 func (l *logger) Logger(n string) ILogger {
-	fmt.Fprintf(os.Stderr, "logger(%s).Logger(%s)\n", l.Name(), n)
 	if !ValidName(n) {
 		panic("invalid logger name \"" + n + "\"")
 	}
@@ -144,7 +140,6 @@ func (l *logger) Logger(n string) ILogger {
 		encoder: l.encoder,
 	}
 	l.subs[n] = sub
-	fmt.Fprintf(os.Stderr, "Created logger(%s)\n", sub.Name())
 	return sub
 } //logger.Logger()
 
