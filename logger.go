@@ -53,6 +53,14 @@ type ILogger interface {
 	//Parameter n must be a simple name - no path '/' characters
 	Logger(n string) ILogger
 
+	//Temp also creates logger just like Logger() except
+	//the parent keeps no reference. The name must also not
+	//exist in the parent, but since the parent keeps no reference,
+	//the same temp can be created many times.
+	//This is used for context loggers that
+	//must destroy when the context seize to exist
+	Temp(n string) ILogger
+
 	//Set a name-value and remove it from all children
 	//Set with v=nil also deletes a value for this and all children
 	//With is same as Set but return the logger to chain operations
@@ -100,7 +108,7 @@ type ILogger interface {
 }
 
 //ValidName is a domain name identifier ""
-const namePattern = `[a-z]([a-zA-Z0-9\._-]*[a-zA-Z0-9])?`
+const namePattern = `[a-zA-Z0-9]([a-zA-Z0-9\._-]*[a-zA-Z0-9])?`
 
 var nameRegex = regexp.MustCompile(`^` + namePattern + `$`)
 
@@ -122,14 +130,22 @@ type logger struct {
 }
 
 func (l *logger) Logger(n string) ILogger {
+	sub := l.Temp(n)
+	//only difference between Temp() and Logger() is that parent keeps
+	//reference to the latter
+	l.subs[n] = sub
+	return sub
+} //logger.Logger()
+
+func (l *logger) Temp(n string) ILogger {
 	if !ValidName(n) {
 		panic("invalid logger name \"" + n + "\"")
 	}
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
 	if exists, ok := l.subs[n]; ok {
 		return exists
 	}
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
 	sub := &logger{
 		parent:  l,
 		name:    n,
@@ -139,9 +155,8 @@ func (l *logger) Logger(n string) ILogger {
 		writer:  l.writer,             //inherits parent's writer or replace with own
 		encoder: l.encoder,
 	}
-	l.subs[n] = sub
 	return sub
-} //logger.Logger()
+} //logger.Temp()
 
 //Name of this logger
 func (l *logger) Name() string {
