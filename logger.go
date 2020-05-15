@@ -3,36 +3,64 @@ package log
 import (
 	"fmt"
 	"io"
+	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
-//New creates a standalone logger that writes to the specified writer
-func New(w io.Writer) ILogger {
-	l := &logger{
-		parent:  nil,
-		name:    "",
-		level:   DebugLevel,
-		data:    map[string]interface{}{},
-		subs:    map[string]ILogger{},
-		writer:  w,
-		encoder: DefaultEncoder(),
+//ForThisPackage returns a logger for your package
+func ForThisPackage() ILogger {
+	c := GetCaller(3)
+	fmt.Fprintf(os.Stderr, "ForThisPackage(%s)\n", c.Package)
+	return Logger(c.Package)
+}
+
+//Top returns the top logger
+//set level/writer on this to change all loggers
+func Top() ILogger {
+	fmt.Fprintf(os.Stderr, "Top()\n")
+	return top
+}
+
+//Logger returns a named logger
+//all loggers are added in a path hierarchy to the top logger
+//The name may be any path, but preferably the source path
+//e.g. "github.com/go-msvc/logger" which you can get by
+//calling logger.ForThisPackage()
+func Logger(name string) ILogger {
+	fmt.Fprintf(os.Stderr, "Logger(%s)\n", name)
+	//if name has paths, create parents first
+	names := strings.SplitN(name, "/", -1)
+	log := top
+	for len(names) > 0 {
+		if len(names[0]) > 0 {
+			log = log.Logger(names[0])
+		}
+		names = names[1:]
 	}
-	return l
-} //NewLogger()
+	if log == top {
+		panic("missing logger name")
+	}
+	return log
+} //New()
 
 //ILogger ...
 type ILogger interface {
 	Name() string
 
-	//New creates a sub-logger using the same writer
+	//Logger creates a sub-logger using the same writer
 	//and it inherits data from the parent
-	New(n string) ILogger
+	//Parameter n must be a simple name - no path '/' characters
+	Logger(n string) ILogger
 
-	//Set a name-value
+	//Set a name-value and remove it from all children
+	//Set with v=nil also deletes a value for this and all children
+	//With is same as Set but return the logger to chain operations
 	Set(n string, v interface{})
-	//Get name-value
+	With(n string, v interface{}) ILogger
 	Get(n string) (interface{}, bool)
 
 	//output functions
@@ -54,27 +82,28 @@ type ILogger interface {
 	Fatalf(format string, args ...interface{})
 
 	//--------------------------------------------------------------------------
-	//NOTE: all "With...()" methods updates the current logger and all children
+	//NOTE: all "Set...()" and "With...()" methods updates the current logger and all children
+	// Loggers are not copied as they all exist in the tree
+	// With...() is only offered to chain operations, but they do the same as Set...()
 	//--------------------------------------------------------------------------
 	//set the level and return the same logger
 	//also update all children
+	SetLevel(l Level)
 	WithLevel(l Level) ILogger
-
-	//With Set(name-value) and delete it from all children
-	//then returns the modified logger
-	With(n string, v interface{}) ILogger
 
 	//set the encode and return the same logger
 	//also update all children
+	SetEncoder(e IEncoder)
 	WithEncoder(e IEncoder) ILogger
 
 	//set the write and return the same logger
 	//also update all children
+	SetWriter(w io.Writer)
 	WithWriter(w io.Writer) ILogger
 }
 
-//ValidName is identifier ""
-const namePattern = `[a-z]([a-zA-Z0-9_-]*[a-zA-Z0-9])?`
+//ValidName is a domain name identifier ""
+const namePattern = `[a-z]([a-zA-Z0-9\._-]*[a-zA-Z0-9])?`
 
 var nameRegex = regexp.MustCompile(`^` + namePattern + `$`)
 
@@ -95,7 +124,8 @@ type logger struct {
 	encoder IEncoder
 }
 
-func (l *logger) New(n string) ILogger {
+func (l *logger) Logger(n string) ILogger {
+	fmt.Fprintf(os.Stderr, "logger(%s).Logger(%s)\n", l.Name(), n)
 	if !ValidName(n) {
 		panic("invalid logger name \"" + n + "\"")
 	}
@@ -114,15 +144,16 @@ func (l *logger) New(n string) ILogger {
 		encoder: l.encoder,
 	}
 	l.subs[n] = sub
+	fmt.Fprintf(os.Stderr, "Created logger(%s)\n", sub.Name())
 	return sub
-} //logger.New()
+} //logger.Logger()
 
 //Name of this logger
 func (l *logger) Name() string {
 	if l.parent == nil {
 		return l.name
 	}
-	return l.parent.Name() + "." + l.name
+	return l.parent.Name() + "/" + l.name
 } //logger.Name()
 
 //Set a name=value
@@ -152,11 +183,17 @@ func (l *logger) log(skip int, level Level, msg string) {
 	}
 	if level >= l.level {
 		//gather info for the log record
+		cleanMessage := strings.Map(func(r rune) rune {
+			if unicode.IsGraphic(r) {
+				return r
+			}
+			return -1
+		}, msg)
 		record := Record{
 			Time:    time.Now(),
 			Caller:  GetCaller(skip + 4),
 			Level:   level,
-			Message: msg,
+			Message: cleanMessage,
 		}
 
 		//encode and write it
@@ -186,13 +223,17 @@ func (l *logger) Warnf(format string, args ...interface{})             { l.logf(
 func (l *logger) Errorf(format string, args ...interface{})            { l.logf(ErrorLevel, format, args...) }
 func (l *logger) Fatalf(format string, args ...interface{})            { l.logf(FatalLevel, format, args...) }
 
-func (l *logger) WithLevel(level Level) ILogger {
+func (l *logger) SetLevel(level Level) {
 	if level >= _minLevel && level <= _maxLevel {
 		l.level = level
 		for _, ll := range l.subs {
 			ll.WithLevel(level)
 		}
 	}
+} //logger.SetLevel()
+
+func (l *logger) WithLevel(level Level) ILogger {
+	l.SetLevel(level)
 	return l
 }
 
@@ -210,22 +251,54 @@ func (l *logger) With(n string, v interface{}) ILogger {
 	return l
 } //logger.With()
 
-func (l *logger) WithEncoder(e IEncoder) ILogger {
+func (l *logger) SetEncoder(e IEncoder) {
 	if e != nil {
 		l.encoder = e
 		for _, ll := range l.subs {
 			ll.WithEncoder(e)
 		}
 	}
+}
+
+func (l *logger) WithEncoder(e IEncoder) ILogger {
+	l.SetEncoder(e)
 	return l
 }
 
-func (l *logger) WithWriter(w io.Writer) ILogger {
+func (l *logger) SetWriter(w io.Writer) {
 	if w != nil {
 		l.writer = w
 		for _, ll := range l.subs {
 			ll.WithWriter(w)
 		}
 	}
+}
+
+func (l *logger) WithWriter(w io.Writer) ILogger {
+	l.SetWriter(w)
 	return l
+}
+
+//top is the parent of all loggers, allowing any program to discover
+//loggers created in various packages using the same logger library
+//if you modify settings in a parent (like top) then itself and all
+//children are updated, so you can switch on all logging by updating
+//top
+var (
+	top ILogger
+	log ILogger
+)
+
+func init() {
+	//create default top logger
+	top = &logger{
+		parent:  top,
+		name:    "",
+		level:   DebugLevel,
+		data:    map[string]interface{}{},
+		subs:    map[string]ILogger{},
+		writer:  os.Stderr,
+		encoder: DefaultEncoder(),
+	}
+	log = ForThisPackage()
 }
